@@ -1,0 +1,321 @@
+---
+title: "추천시스템"
+output:
+  html_notebook:
+    toc: yes
+  html_document:
+    toc: yes
+---
+
+```{r include=FALSE}
+Sys.setlocale('LC_ALL', 'ko_KR.UTF-8')
+```
+# maxiter 이 Dimention Reduction 이 될 수 있다. ""
+/
+# recommenderlab
+
+
+```{r}
+library(recommenderlab)
+```
+
+setClass("student", slots=list(name="character", age="numeric", GPA="numeric"))
+
+s <- new("student",name="John", age=21, GPA=3.5)
+
+setMethod("show",
+         "student",
+         function(object) {
+           cat(object@name, "\n")
+           cat(object@age, "years old\n")
+           cat("GPA:", object@GPA, "\n")
+         }
+)
+
+
+
+## class 내용 - get_entries
+```{r}
+recommender_models <- recommenderRegistry$get_entries()
+names(recommender_models)
+```
+
+* POPULAR: 평점을 준 사용자의 수에 따른 추천 #비교용. rating 늘어놓고 무엇이 높은지.
+* RANDOM: 무작위
+* UBCF: 사용자 기반 CF #User Base Collaboration Filtering
+* IBCF: 상품 기반 CF # Item Base Collaboration Filtering.
+* SVD: SVD를 사용한 차원축소 방식
+
+# model 보는법.
+# cosine 을 사용할 것이고 평균을 0으로 맞춰줄것이다. 
+#k : ~와 유사한 영화, 개수를 정하는 것. 들의 가중평균. 몇개를 볼 거냐.
+```{r}
+recommender_models
+```
+
+## 상품 기반 협업 필터링
+# 유사도는 cosine 쓸것이고 k 30개 쓸것이다. 
+```{r}
+recommender_models$IBCF_realRatingMatrix$description
+recommender_models$IBCF_realRatingMatrix$parameters
+```
+
+## 사용자 기반 협업 필터링
+```{r}
+recommender_models$UBCF_realRatingMatrix$description
+recommender_models$UBCF_realRatingMatrix$parameters
+```
+
+## MovieLense
+## 올리기!
+1664개의 영화에 대한 943명 사용자 각각의 평점 데이터
+# 943 행 명. 1664개 영화. 
+# User 943, item 1664
+# r 99392
+
+```{r}
+data(MovieLense)
+MovieLense
+```
+
+### 이미지
+## 500개만 샘플링. 
+## 어두운색이 값이 있는 것. 
+```{r}
+image(sample(MovieLense, 500), main = "Raw ratings for 500 Users")
+```
+
+### 평점 히스토그램
+```{r}
+library(ggplot2)
+qplot(getRatings(MovieLense), binwidth = 1, 
+      main = "Histogram", xlab = "Rating")
+```
+
+### 행렬 형태로 변환
+```{r}
+MovieLense_mat <- as(MovieLense, "matrix")
+MovieLense_mat[1:10,]
+```
+
+
+```{r}
+### 사용자간 유사도
+## 유사도의 반대개념.
+similarity(MovieLense[1:3], method = "pearson", which="users")
+## 사용자간 유사도 사용자 사이의 유사도.
+similarity(MovieLense[1:3], method = "cosine", which="users")
+similarity(MovieLense[1:3], method = "jaccard", which="users")
+
+## 방법에 따라 차이가 있음.
+```
+
+```{r, include=FALSE}
+help("dissimilarity",package="recommenderlab")
+```
+
+### Pearson Correlation Similarity
+## 공분산 / 표준편차. 
+
+#### 첫 번째와 두 번째
+```{r}
+x1 <- MovieLense_mat[1,]
+x2 <- MovieLense_mat[2,]
+y1 <- x1[!is.na(x1)&!is.na(x2)]
+y2 <- x2[!is.na(x1)&!is.na(x2)]
+# normalize 하려고 mean을 뺌.
+w1 <- y1 - mean(y1)
+w2 <- y2 - mean(y2)
+# 유사도. : 공분산 /root의 분산 곱.
+r=(w1 %*% w2) / sqrt((w1 %*% w1) * (w2 %*% w2))
+r
+# 1- 유사도
+# correlaton 의 역술(pearson ) 을 계산하고 있었음. 
+# 값이 작을수록 유사한 값이었으므로.
+
+# 값이 클수록 유사한 값으로 만들기 위해 1 - r 
+d<-1-r
+d
+1/(1+d)
+```
+
+#### 두 번째와 세 번째
+```{r}
+x2 <- MovieLense_mat[2,]
+x3 <- MovieLense_mat[3,]
+y2 <- x2[!is.na(x2)&!is.na(x3)]
+y3 <- x3[!is.na(x2)&!is.na(x3)]
+w2 <- y2 - mean(y2)
+w3 <- y3 - mean(y3)
+r=(w2 %*% w3) / sqrt((w2 %*% w2) * (w3 %*% w3))
+d<-1-r
+d
+1/(1+d)
+```
+
+### Cosine Similarity
+```{r}
+x1 <- MovieLense_mat[1,]
+x2 <- MovieLense_mat[2,]
+x1[is.na(x1)] <- 0
+x2[is.na(x2)] <- 0
+(x1 %*% x2) / sqrt((x1 %*% x1) * (x2 %*% x2))
+```
+
+## 협업 필터링
+## 실제 모델링 : 과적합을 줄이는 것. 필요없는 애들까지 계산하는건 노이즈만 됨.
+
+### 훈련 데이터: 평가가 100개 이상인 사용자 대상 , 정당화가 안 될 정도로 작지만.
+```{r}
+df = data.frame(user="u1", item="i1", rating = 5)
+r = as(df, "realRatingMatrix")
+str(r)
+# DIM 유저 하나의 영화 하나. 
+MovieLense100 <- MovieLense[rowCounts(MovieLense) >= 100,]
+train <- MovieLense100[1:50]
+str(train)
+```
+
+### User-Item 행렬
+```{r}
+#mat_train 만들어야함. 
+train@data
+write.csv(as(train@data, "matrix")[1:2,], "mat_train.csv")
+
+```
+
+### Recommender Registry
+```{r}
+recommenderRegistry$get_entry('UBCF', dataType = "realRatingMatrix")
+```
+
+### Recommender Registry 항목
+```{r}
+recommenderRegistry$get_entry('UBCF', dataType = "realRatingMatrix")[]
+```
+
+### 사용자 기반 협업 필터링
+```{r}
+rec <- Recommender(train, method = "UBCF")
+str(rec)
+```
+
+### 모형 상세
+```{r}
+write.csv(as(rec@model$data, "matrix")[1:2,], "mat_model.csv")
+write.csv(as(normalize(train), "matrix")[1:2,], "mat_train_center.csv")
+image(sample(normalize(MovieLense), 500), main = "Normalized ratings for 500 Users")
+```
+
+### 예측
+## 추천. 평점을 nomalize 한 가중평균 후 가장 높은 것 10개. UserBase
+```{r}
+pre <- predict(rec, MovieLense100[1:3], n = 10)
+pre
+as(pre, "list")
+```
+
+### 상품 기반 협업 필터링
+## item base
+
+```{r}
+rec <- Recommender(train, method = "IBCF")
+str(rec)
+```
+
+### 모형 상세
+```{r}
+write.csv(as(rec@model$sim, "matrix"), "mat_model_sim.csv")
+```
+
+### 모형 비교
+
+#### split: train 비율만큼 훈련에 사용하고 나머지는 테스트에 사용
+```{r}
+# 90% 훈련 데이터 / 반복 1번 / 상품 10개씩 / 좋은 평점은 4점 이상
+scheme <- evaluationScheme(MovieLense, method = "split", train = .9,
+                           k = 1, given = 10, goodRating = 4)
+algorithms <- list(
+  "random items" = list(name="RANDOM", param=NULL),
+  "popular items" = list(name="POPULAR", param=list(normalize = "Z-score")),
+  "user-based CF" = list(name="UBCF", param=list(method="Cosine", nn=50)),
+  "item-based CF" = list(name="IBCF", param=list(k=50))
+  )
+
+# n 개의 영화 추천
+results <- evaluate(scheme, algorithms, n=c(1, 3, 5, 10, 15, 20))
+
+# 혼동행렬 - RANDOM
+getConfusionMatrix(results[[1]])
+# 혼동행렬 - POPULAR
+getConfusionMatrix(results[[2]])
+# 혼동행렬 - UBCF
+getConfusionMatrix(results[[3]])
+# 혼동행렬 - IBCF
+getConfusionMatrix(results[[4]])
+
+# ROC 곡선
+plot(results, annotate = 1:4, legend="topleft")
+
+# precision / recall
+plot(results, "prec/rec", annotate=1:4)
+
+```
+
+#### randome과 item-based 제거하고 SVD 추가
+```{r}
+scheme <- evaluationScheme(MovieLense, method = "split", train = .9,
+                           k = 1, given = 10, goodRating = 4)
+algorithms <- list(
+  "popular items" = list(name="POPULAR", param=list(normalize = "Z-score")),
+  "user-based CF" = list(name="UBCF", param=list(method="Cosine", nn=50)),
+  "SVD" = list(name="SVD", param=list(k=50))
+  )
+
+# n 개의 영화 추천
+results <- evaluate(scheme, algorithms, n=c(1, 3, 5, 10, 15, 20))
+
+# 혼동행렬 - POPULAR
+getConfusionMatrix(results[[1]])
+# 혼동행렬 - UBCF
+getConfusionMatrix(results[[2]])
+# 혼동행렬 - SVD
+getConfusionMatrix(results[[3]])
+
+# ROC 곡선
+plot(results, annotate = c(1:4), legend="topleft")
+
+# precision / recall
+plot(results, "prec/rec", annotate = c(1:4))
+
+```
+## 5개를 추천하는 SVD 상황에서는 recall 이 0.04정도 나오고 precision이 0.2정도 나온다. 
+## 그래서 popular items 의 파라미터를 쓰는게 좋다. 
+## SDV를 썼기때문에 PCA를 쓸 필요가 없다. 
+#### 정확도 평가
+```{r}
+scheme <- evaluationScheme(MovieLense, method = "split", train = .9,
+                           k = 1, given = 10, goodRating = 4)
+## 추천 
+## S4 타입.
+Rec.ubcf <- Recommender(getData(scheme, "train"), "UBCF")
+Rec.ibcf <- Recommender(getData(scheme, "train"), "IBCF")
+## known 아는 부분. unknown 비교해볼 값. 
+## 예측.
+## S4 타입.
+p.ubcf <- predict(Rec.ubcf, getData(scheme, "known"), type="ratings")
+p.ibcf <- predict(Rec.ibcf, getData(scheme, "known"), type="ratings")
+
+##예측정확도 계산.
+## 기준이 되는건 진짜 사용자들의 평점. 레코멘더 모델 로 예측함수 돌린것. 그 차이를 가지고 절대값을 썼는지 RMSE 를 썼는지 보는것. 
+error.ubcf<-calcPredictionAccuracy(p.ubcf, getData(scheme, "unknown"))
+error.ibcf<-calcPredictionAccuracy(p.ibcf, getData(scheme, "unknown"))
+error <- rbind(error.ubcf,error.ibcf)
+rownames(error) <- c("UBCF","IBCF")
+error
+```
+
+
+## 모형들 사이의 비교를 했지만 순서가 바뀔수 있는 파라미터 z-score 같은 것들이 있느지.
+## IBCF, UBCF 외에 다른것들을 사용해보기.
+
